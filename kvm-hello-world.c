@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include <linux/kvm.h>
 
+#include "communication_scheme.h"
+
 /* CR0 bits */
 #define CR0_PE 1u
 #define CR0_MP (1U << 1)
@@ -64,11 +66,6 @@
 #define PDE64_DIRTY (1U << 6)
 #define PDE64_PS (1U << 7)
 #define PDE64_G (1U << 8)
-
-/* Newly added for exercise */
-#define DATA_TRANSFER_IDENTIFIER_EXAMPLE (0xAB)
-#define B_1_STRING_TRANSFER_IDENTIFIER (0xB1)
-#define B_2_EXIT_COUNT_IDENTIFIER (0xB2)
 
 struct vm {
 	int sys_fd;
@@ -163,10 +160,9 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 {
 	struct kvm_regs regs;
 	uint64_t memval = 0;
-	uint32_t exit_count = 0;
-	uint32_t data_from_guest = 0;
-	uint32_t data_to_guest = 0xabababab;
-	uint32_t offset_string_from_guest;
+	uint32_t exit_count = 0, data_from_guest = 0, data_to_guest = 0xabababab, offset_string_from_guest;
+	FILE *guest_file = NULL;
+	uint32_t offset_read_struct_from_guest = 0, output_length = 0;
 
 	for (;;) {
 		if (ioctl(vcpu->fd, KVM_RUN, 0) < 0) {
@@ -210,19 +206,68 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 
 			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
 				&& vcpu->kvm_run->io.port == B_1_STRING_TRANSFER_IDENTIFIER) {
+				/* print hypercall */
 				char *p = (char *)vcpu->kvm_run;
 				offset_string_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
-				printf("[Hypervisor] String from guest: \n\t[Guest] %s\n", &(vm->mem[offset_string_from_guest]));
+				printf("[Hypervisor::print] String from guest: \n\t[Guest] %s\n", &(vm->mem[offset_string_from_guest]));
 				continue;
 			}
 
 			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN
 				&& vcpu->kvm_run->io.port == B_2_EXIT_COUNT_IDENTIFIER) {
+				/* exits hypercall */
 				char *p = (char *)vcpu->kvm_run;
 				*((uint32_t *)(p + vcpu->kvm_run->io.data_offset)) = exit_count;
-				printf("[Hypervisor] Sending Exit count (%d) to guest\n", exit_count);
+				printf("[Hypervisor::exits] Sending Exit count (%d) to guest\n", exit_count);
 				continue;
 			}
+
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
+				&& vcpu->kvm_run->io.port == C_1_OPEN_PATH_TRANSFER_IDENTIFIER) {
+				/* open hypercall */
+				char *p = (char *)vcpu->kvm_run;
+				offset_string_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
+				printf("[Hypervisor::open] Path from guest: \n\t[Guest] %s\n", &(vm->mem[offset_string_from_guest]));
+				guest_file = fopen(&(vm->mem[offset_string_from_guest]), "rb");
+				if (guest_file != NULL) {
+					printf("[Hypervisor::open] Openned Successfully\n");
+				}
+				continue;
+			}
+
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
+				&& vcpu->kvm_run->io.port == C_3_WRITE_FILE_TRANSFER_IDENTIFIER) {
+				/* write hypercall */
+				
+				continue;
+			}
+
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
+				&& vcpu->kvm_run->io.port == C_2_READ_FILE_TRANSFER_IDENTIFIER) {
+				/* read hypercall */
+				char *p = (char *)vcpu->kvm_run;
+				offset_read_struct_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
+				printf("[Hypervisor::read] Read requested length: %d\n", vm->mem[offset_read_struct_from_guest]);
+
+				output_length = fread(
+					&(vm->mem[offset_read_struct_from_guest + 1]),
+					1,
+					vm->mem[offset_read_struct_from_guest],
+					guest_file);
+
+				vm->mem[offset_read_struct_from_guest] = output_length;
+				printf("[Hypervisor::read] Read: %d\n", output_length);
+				continue;
+			}
+
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN
+				&& vcpu->kvm_run->io.port == C_4_CLOSE_FILE_TRANSFER_IDENTIFIER) {
+				/* close hypercall */
+				fclose(guest_file);
+				printf("[Hypervisor::close] Closed\n");
+				continue;
+			}
+			
 
 			/* fall through */
 		default:
