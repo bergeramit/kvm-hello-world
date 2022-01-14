@@ -65,6 +65,8 @@
 #define PDE64_PS (1U << 7)
 #define PDE64_G (1U << 8)
 
+/* Newly added for exercise */
+#define DATA_TRANSFER_IDENTIFIER_EXAMPLE (0xAB)
 
 struct vm {
 	int sys_fd;
@@ -159,6 +161,8 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 {
 	struct kvm_regs regs;
 	uint64_t memval = 0;
+	uint32_t data_from_guest = 0;
+	uint32_t data_to_guest = 0xabababab;
 
 	for (;;) {
 		if (ioctl(vcpu->fd, KVM_RUN, 0) < 0) {
@@ -178,6 +182,23 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				fwrite(p + vcpu->kvm_run->io.data_offset,
 				       vcpu->kvm_run->io.size, 1, stdout);
 				fflush(stdout);
+				continue;
+			}
+
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
+				&& vcpu->kvm_run->io.port == DATA_TRANSFER_IDENTIFIER_EXAMPLE
+				&& vcpu->kvm_run->io.size == 4) {
+				char *p = (char *)vcpu->kvm_run;
+				data_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
+				printf("[Example] Data Received From Guest (in hex): %x\n",data_from_guest);
+				continue;
+			}
+
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN
+				&& vcpu->kvm_run->io.port == DATA_TRANSFER_IDENTIFIER_EXAMPLE) {
+				char *p = (char *)vcpu->kvm_run;
+				*((uint32_t *)(p + vcpu->kvm_run->io.data_offset)) = data_to_guest;
+				printf("[Example] Data Send To Guest (in hex): %x\n", data_to_guest);
 				continue;
 			}
 
