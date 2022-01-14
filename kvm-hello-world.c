@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <linux/kvm.h>
+#include <pthread.h>
 
 #include "communication_scheme.h"
 
@@ -73,8 +74,9 @@ struct vm {
 	char *mem;
 };
 
-void vm_init(struct vm *vm, size_t mem_size)
+void vm_init(struct vm *vm, size_t mem_size, int vcpu_count)
 {
+	int i=0;
 	int api_ver;
 	struct kvm_userspace_memory_region memreg;
 
@@ -116,14 +118,16 @@ void vm_init(struct vm *vm, size_t mem_size)
 
 	madvise(vm->mem, mem_size, MADV_MERGEABLE);
 
-	memreg.slot = 0;
-	memreg.flags = 0;
-	memreg.guest_phys_addr = 0;
-	memreg.memory_size = mem_size;
-	memreg.userspace_addr = (unsigned long)vm->mem;
-        if (ioctl(vm->fd, KVM_SET_USER_MEMORY_REGION, &memreg) < 0) {
-		perror("KVM_SET_USER_MEMORY_REGION");
-                exit(1);
+	for (i=0; i< vcpu_count; i++) {
+		memreg.slot = i;
+		memreg.flags = 0;
+		memreg.guest_phys_addr = i * (mem_size / vcpu_count);
+		memreg.memory_size = mem_size / vcpu_count;
+		memreg.userspace_addr = (unsigned long)vm->mem + i * (mem_size / vcpu_count);
+			if (ioctl(vm->fd, KVM_SET_USER_MEMORY_REGION, &memreg) < 0) {
+			perror("KVM_SET_USER_MEMORY_REGION");
+					exit(1);
+		}
 	}
 }
 
@@ -132,11 +136,18 @@ struct vcpu {
 	struct kvm_run *kvm_run;
 };
 
-void vcpu_init(struct vm *vm, struct vcpu *vcpu)
+struct thread_args {
+	struct vm* vm;
+	struct vcpu* vcpu;
+	uint64_t base_address;
+};
+
+
+void vcpu_init(struct vm *vm, struct vcpu *vcpu, int vcpu_index)
 {
 	int vcpu_mmap_size;
 
-	vcpu->fd = ioctl(vm->fd, KVM_CREATE_VCPU, 0);
+	vcpu->fd = ioctl(vm->fd, KVM_CREATE_VCPU, vcpu_index);
         if (vcpu->fd < 0) {
 		perror("KVM_CREATE_VCPU");
                 exit(1);
@@ -156,10 +167,10 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu)
 	}
 }
 
-int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
+int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz __attribute__((unused)))
 {
 	struct kvm_regs regs;
-	uint64_t memval = 0;
+	//uint64_t memval = 0;
 	uint32_t exit_count = 0, data_from_guest = 0, data_to_guest = 0xabababab, offset_string_from_guest;
 	FILE *guest_file = NULL;
 	char file_path[40] = {0};
@@ -318,12 +329,12 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 		return 0;
 	}
 
-	memcpy(&memval, &vm->mem[0x400], sz);
-	if (memval != 42) {
-		printf("Wrong result: memory at 0x400 is %lld\n",
-		       (unsigned long long)memval);
-		return 0;
-	}
+	// memcpy(&memval, &vm->mem[0x400], sz);
+	// if (memval != 42) {
+	// 	printf("Wrong result: memory at 0x400 is %lld\n",
+	// 	       (unsigned long long)memval);
+	// 	return 0;
+	// }
 
 	return 1;
 }
@@ -497,20 +508,20 @@ static void setup_64bit_code_segment(struct kvm_sregs *sregs)
 	sregs->ds = sregs->es = sregs->fs = sregs->gs = sregs->ss = seg;
 }
 
-static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
+static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs, uint64_t base_vcpu_addr)
 {
-	uint64_t pml4_addr = 0x2000;
+	uint64_t pml4_addr = base_vcpu_addr + 0x2000;
 	uint64_t *pml4 = (void *)(vm->mem + pml4_addr);
 
-	uint64_t pdpt_addr = 0x3000;
+	uint64_t pdpt_addr = base_vcpu_addr + 0x3000;
 	uint64_t *pdpt = (void *)(vm->mem + pdpt_addr);
 
-	uint64_t pd_addr = 0x4000;
+	uint64_t pd_addr = base_vcpu_addr + 0x4000;
 	uint64_t *pd = (void *)(vm->mem + pd_addr);
 
 	pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;
 	pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;
-	pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS;
+	pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | base_vcpu_addr;
 
 	sregs->cr3 = pml4_addr;
 	sregs->cr4 = CR4_PAE;
@@ -521,7 +532,7 @@ static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
 	setup_64bit_code_segment(sregs);
 }
 
-int run_long_mode(struct vm *vm, struct vcpu *vcpu)
+int run_long_mode(struct vm *vm, struct vcpu *vcpu, uint64_t base_vcpu_addr)
 {
 	struct kvm_sregs sregs;
 	struct kvm_regs regs;
@@ -533,7 +544,7 @@ int run_long_mode(struct vm *vm, struct vcpu *vcpu)
 		exit(1);
 	}
 
-	setup_long_mode(vm, &sregs);
+	setup_long_mode(vm, &sregs, base_vcpu_addr);
 
         if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
 		perror("KVM_SET_SREGS");
@@ -552,15 +563,22 @@ int run_long_mode(struct vm *vm, struct vcpu *vcpu)
 		exit(1);
 	}
 
-	memcpy(vm->mem, guest64, guest64_end-guest64);
+	memcpy(vm->mem + base_vcpu_addr, guest64, guest64_end-guest64);
 	return run_vm(vm, vcpu, 8);
 }
 
+void *run_long_mode_wrapper(void *args) {
+	struct thread_args *thread_args_vcpu = (struct thread_args *)args;
+	run_long_mode(thread_args_vcpu->vm, thread_args_vcpu->vcpu, thread_args_vcpu->base_address);
+	return NULL;
+}
 
 int main(int argc, char **argv)
 {
 	struct vm vm;
-	struct vcpu vcpu;
+	struct vcpu vcpu, vcpu2;
+	struct thread_args thread_args_vcpu;
+	pthread_t id;
 	enum {
 		REAL_MODE,
 		PROTECTED_MODE,
@@ -594,8 +612,9 @@ int main(int argc, char **argv)
 		}
 	}
 
-	vm_init(&vm, 0x200000);
-	vcpu_init(&vm, &vcpu);
+	vm_init(&vm, 0x400000, 2);
+	vcpu_init(&vm, &vcpu, 0);
+	vcpu_init(&vm, &vcpu2, 1);
 
 	switch (mode) {
 	case REAL_MODE:
@@ -608,7 +627,16 @@ int main(int argc, char **argv)
 		return !run_paged_32bit_mode(&vm, &vcpu);
 
 	case LONG_MODE:
-		return !run_long_mode(&vm, &vcpu);
+		/*creating thread*/
+		thread_args_vcpu.vm = &vm;
+		thread_args_vcpu.vcpu = &vcpu;
+		thread_args_vcpu.base_address = 0;
+		if(pthread_create(&id,NULL,&run_long_mode_wrapper,(void *)&thread_args_vcpu) == 0) {
+			printf("[Hypervisor] First Thread executing...\n");
+		}
+		
+		printf("[Hypervisor] parent executing...\n");
+		return !run_long_mode(&vm, &vcpu2, 0x200000);
 	}
 
 	return 1;
