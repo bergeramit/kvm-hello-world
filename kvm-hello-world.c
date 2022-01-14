@@ -67,7 +67,8 @@
 
 /* Newly added for exercise */
 #define DATA_TRANSFER_IDENTIFIER_EXAMPLE (0xAB)
-#define C_1_STRING_TRANSFER_IDENTIFIER (0xEE)
+#define B_1_STRING_TRANSFER_IDENTIFIER (0xB1)
+#define B_2_EXIT_COUNT_IDENTIFIER (0xB2)
 
 struct vm {
 	int sys_fd;
@@ -162,6 +163,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 {
 	struct kvm_regs regs;
 	uint64_t memval = 0;
+	uint32_t exit_count = 0;
 	uint32_t data_from_guest = 0;
 	uint32_t data_to_guest = 0xabababab;
 	uint32_t offset_string_from_guest;
@@ -178,6 +180,8 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 			goto check;
 
 		case KVM_EXIT_IO:
+			exit_count++;
+
 			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
 			    && vcpu->kvm_run->io.port == 0xE9) {
 				char *p = (char *)vcpu->kvm_run;
@@ -192,7 +196,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				&& vcpu->kvm_run->io.size == 4) {
 				char *p = (char *)vcpu->kvm_run;
 				data_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
-				printf("[Example] Data Received From Guest (in hex): %x\n",data_from_guest);
+				printf("[Hypervisor][Example] Data Received From Guest (in hex): %x\n\n",data_from_guest);
 				continue;
 			}
 
@@ -200,15 +204,23 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				&& vcpu->kvm_run->io.port == DATA_TRANSFER_IDENTIFIER_EXAMPLE) {
 				char *p = (char *)vcpu->kvm_run;
 				*((uint32_t *)(p + vcpu->kvm_run->io.data_offset)) = data_to_guest;
-				printf("[Example] Data Send To Guest (in hex): %x\n", data_to_guest);
+				printf("[Hypervisor][Example] Data Send To Guest (in hex): %x\n\n", data_to_guest);
 				continue;
 			}
 
 			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
-				&& vcpu->kvm_run->io.port == C_1_STRING_TRANSFER_IDENTIFIER) {
+				&& vcpu->kvm_run->io.port == B_1_STRING_TRANSFER_IDENTIFIER) {
 				char *p = (char *)vcpu->kvm_run;
 				offset_string_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
-				printf("String from guest: %s\n", &(vm->mem[offset_string_from_guest]));
+				printf("[Hypervisor] String from guest: \n\t[Guest] %s\n", &(vm->mem[offset_string_from_guest]));
+				continue;
+			}
+
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN
+				&& vcpu->kvm_run->io.port == B_2_EXIT_COUNT_IDENTIFIER) {
+				char *p = (char *)vcpu->kvm_run;
+				*((uint32_t *)(p + vcpu->kvm_run->io.data_offset)) = exit_count;
+				printf("[Hypervisor] Sending Exit count (%d) to guest\n", exit_count);
 				continue;
 			}
 
