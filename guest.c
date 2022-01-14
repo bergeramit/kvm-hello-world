@@ -19,12 +19,13 @@ static inline uint32_t data_input_from_hypervisor(uint16_t data_transfer_indenti
 }
 
 void place_string_in_address(const char *str, char *address_pointer) {
-	char i = 0;
+	int i = 0;
 	while(*(str + i) != 0) {
 		*(char *) (address_pointer + i) = *(str + i);
 		i++;
 	}
 	*(char *) (address_pointer + i) = '\0';
+
 }
 
 void print(const char *str) {
@@ -49,6 +50,13 @@ int read(void *buf, int len) {
 	return 0;
 }
 
+int write(void *buf, int len) {
+	* (int *) C_3_WRITE_BUFFER_ADDRESS = len;
+	place_string_in_address(buf, (char *)(C_3_WRITE_BUFFER_ADDRESS + 1));
+	data_out_to_hypervisor(C_3_WRITE_FILE_TRANSFER_IDENTIFIER, C_3_WRITE_BUFFER_ADDRESS);
+	return 0;
+}
+
 void close() {
 	data_out_to_hypervisor(C_4_CLOSE_FILE_TRANSFER_IDENTIFIER, 0);
 }
@@ -58,9 +66,9 @@ __attribute__((noreturn))
 __attribute__((section(".start")))
 _start(void) {
 	const char *p;
-	char exit_print_format[12] = "X exits\n";
-	uint32_t exit_count_before_test = 0, exit_count_after = 0;
 	uint32_t from_hypervisor;
+	char exit_print_format[9] = "X exits\n";
+	uint32_t exit_count_before_test = 0, exit_count_after = 0;
 
 	for (p = "Hello, world!\n"; *p; ++p)
 		outb(0xE9, *p);
@@ -69,21 +77,29 @@ _start(void) {
 	from_hypervisor = data_input_from_hypervisor(DATA_TRANSFER_IDENTIFIER_EXAMPLE);
 	data_out_to_hypervisor(DATA_TRANSFER_IDENTIFIER_EXAMPLE, from_hypervisor);
 
-	print("(b.1) This is a user string");
-	print("(b.1) Successful run!\n");
-
-	print("(b.2) hypercalls to 'exits' also count as exits :)");
-	print("(b.2) output of the guest after a single print should be 2\n\t\tone for the print and one for the exits hypercall");
-	print("(b.2) calling exits...");
+	/* (b.1) Test to see the string sent */
+	print("Hello from guest!");
+	/*
+		(b.2) hypercalls to 'exits' also count as exits :)
+		output of the guest after a single print should be 2 - 
+			1. for the print
+			2. for the exits hypercall
+	*/
 	exit_count_before_test = exits();
-	print("Sample Print to change the exit count,\n\t\tnow calling exits again...");
+	print("print between exits");
 	exit_count_after = exits();
 	exit_print_format[0] = (char)(exit_count_after - exit_count_before_test) + '0';
 	print(exit_print_format);
 
-	print("(C.1)");
+	/* (C.1) open temp.txt */
 	open("temp.txt");
+	/* (C.2) Read 2 chars */
 	read((void *)C_2_READ_BUFFER_STRUCT_ADDRESS, 2);
+	close();
+	/* (C.3) Write 'YE' */
+	write("YE", 2);
+	/* (C.4) */
+	close();
 
 	*(long *) 0x400 = 42;
 

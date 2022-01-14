@@ -162,7 +162,8 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 	uint64_t memval = 0;
 	uint32_t exit_count = 0, data_from_guest = 0, data_to_guest = 0xabababab, offset_string_from_guest;
 	FILE *guest_file = NULL;
-	uint32_t offset_read_struct_from_guest = 0, output_length = 0;
+	char file_path[40] = {0};
+	uint32_t offset_read_struct_from_guest = 0, output_length = 0, offset_write_buffer_from_guest = 0;
 
 	for (;;) {
 		if (ioctl(vcpu->fd, KVM_RUN, 0) < 0) {
@@ -228,17 +229,39 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				char *p = (char *)vcpu->kvm_run;
 				offset_string_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
 				printf("[Hypervisor::open] Path from guest: \n\t[Guest] %s\n", &(vm->mem[offset_string_from_guest]));
-				guest_file = fopen(&(vm->mem[offset_string_from_guest]), "rb");
-				if (guest_file != NULL) {
-					printf("[Hypervisor::open] Openned Successfully\n");
-				}
+				strcpy(file_path, &(vm->mem[offset_string_from_guest]));
+				
+				/* 
+					Because the desired API does not tell us to read or write
+					we need to open and close, when asked to, depending on the hypercall
+					guest_file = fopen(&(vm->mem[offset_string_from_guest]), "w+");
+					if (guest_file != NULL) {
+						printf("[Hypervisor::open] Openned Successfully\n");
+					}
+				*/
 				continue;
 			}
 
 			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
 				&& vcpu->kvm_run->io.port == C_3_WRITE_FILE_TRANSFER_IDENTIFIER) {
 				/* write hypercall */
-				
+				char *p = (char *)vcpu->kvm_run;
+				offset_write_buffer_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
+				printf("[Hypervisor::write] Write requested length: %d\n", vm->mem[offset_write_buffer_from_guest]);
+
+				/* 
+					Because the desired API does not tell us to read or write
+					we need to open and close, when asked to, depending on the hypercall
+				*/
+				guest_file = fopen(file_path, "w");
+				output_length = fwrite(
+					&(vm->mem[offset_write_buffer_from_guest + 1]),
+					1,
+					vm->mem[offset_write_buffer_from_guest],
+					guest_file
+				);
+				vm->mem[offset_write_buffer_from_guest] = output_length;
+				printf("[Hypervisor::write] Wrote: %d\n", output_length);
 				continue;
 			}
 
@@ -247,20 +270,26 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				/* read hypercall */
 				char *p = (char *)vcpu->kvm_run;
 				offset_read_struct_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
-				printf("[Hypervisor::read] Read requested length: %d\n", vm->mem[offset_read_struct_from_guest]);
+				printf("[Hypervisor::read] Read requested length: [Guest] %d\n", vm->mem[offset_read_struct_from_guest]);
 
+				/* 
+					Because the desired API does not tell us to read or write
+					we need to open and close, when asked to, depending on the hypercall
+				*/
+				guest_file = fopen(file_path, "rb");
 				output_length = fread(
 					&(vm->mem[offset_read_struct_from_guest + 1]),
 					1,
 					vm->mem[offset_read_struct_from_guest],
-					guest_file);
+					guest_file
+				);
 
 				vm->mem[offset_read_struct_from_guest] = output_length;
 				printf("[Hypervisor::read] Read: %d\n", output_length);
 				continue;
 			}
 
-			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_IN
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
 				&& vcpu->kvm_run->io.port == C_4_CLOSE_FILE_TRANSFER_IDENTIFIER) {
 				/* close hypercall */
 				fclose(guest_file);
