@@ -67,6 +67,7 @@
 
 /* Newly added for exercise */
 #define DATA_TRANSFER_IDENTIFIER_EXAMPLE (0xAB)
+#define C_1_STRING_TRANSFER_IDENTIFIER (0xEE)
 
 struct vm {
 	int sys_fd;
@@ -163,6 +164,7 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 	uint64_t memval = 0;
 	uint32_t data_from_guest = 0;
 	uint32_t data_to_guest = 0xabababab;
+	uint32_t offset_string_from_guest;
 
 	for (;;) {
 		if (ioctl(vcpu->fd, KVM_RUN, 0) < 0) {
@@ -199,6 +201,14 @@ int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 				char *p = (char *)vcpu->kvm_run;
 				*((uint32_t *)(p + vcpu->kvm_run->io.data_offset)) = data_to_guest;
 				printf("[Example] Data Send To Guest (in hex): %x\n", data_to_guest);
+				continue;
+			}
+
+			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
+				&& vcpu->kvm_run->io.port == C_1_STRING_TRANSFER_IDENTIFIER) {
+				char *p = (char *)vcpu->kvm_run;
+				offset_string_from_guest = *((uint32_t *)(p + vcpu->kvm_run->io.data_offset));
+				printf("String from guest: %s\n", &(vm->mem[offset_string_from_guest]));
 				continue;
 			}
 
